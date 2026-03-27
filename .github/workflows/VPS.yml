@@ -1,369 +1,122 @@
-name: 🚀 Create Ubuntu VPS
+name: Create Ubuntu VPS
 
 on:
   workflow_dispatch:
     inputs:
       username:
-        description: '👤 Username'
+        description: 'Username'
         required: true
         default: 'ubuntu-vps'
       duration:
-        description: '⏱️ Duration (hours)'
+        description: 'Duration (hours)'
         required: true
         default: '6'
-        type: choice
-        options:
-          - '1'
-          - '2'
-          - '4'
-          - '6'
-          - '12'
 
 jobs:
   create-vps:
     runs-on: ubuntu-latest
-    timeout-minutes: 43200  # 30 days max
     
     steps:
-    - name: 📦 Update system
+    - name: Install tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y openssh-server curl jq net-tools
+        sudo apt-get install -y openssh-server curl jq
         
-    - name: 👤 Create user
+    - name: Create user
       run: |
         USERNAME="${{ github.event.inputs.username }}"
         PASSWORD=$(openssl rand -base64 12 | tr -d '=+/' | cut -c1-12)
-        
         echo "USERNAME=$USERNAME" >> $GITHUB_ENV
         echo "PASSWORD=$PASSWORD" >> $GITHUB_ENV
-        
         sudo useradd -m -s /bin/bash $USERNAME
         echo "$USERNAME:$PASSWORD" | sudo chpasswd
         sudo usermod -aG sudo $USERNAME
-        echo "✅ User created: $USERNAME"
         
-    - name: 🔧 Configure SSH
+    - name: Configure SSH
       run: |
         sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
-        sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
         sudo systemctl restart ssh
-        echo "✅ SSH configured"
         
-    - name: 🌐 Install ngrok
+    - name: Install ngrok
       run: |
         wget -q https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-linux-amd64.tgz
         tar xzf ngrok-v3-stable-linux-amd64.tgz
         sudo mv ngrok /usr/local/bin/
-        rm ngrok-v3-stable-linux-amd64.tgz
-        
         if [ -n "${{ secrets.NGROK_TOKEN }}" ]; then
           ngrok config add-authtoken ${{ secrets.NGROK_TOKEN }}
-          echo "✅ ngrok configured"
-        else
-          echo "⚠️ No ngrok token found"
         fi
         
-    - name: ☁️ Install cloudflared
+    - name: Install cloudflared
       run: |
         wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
         chmod +x cloudflared-linux-amd64
         sudo mv cloudflared-linux-amd64 /usr/local/bin/cloudflared
-        echo "✅ cloudflared installed"
         
-    - name: 🚀 Start tunnels (ngrok + cloudflared)
+    - name: Start tunnels
       run: |
-        # Start ngrok (TCP)
         if [ -n "${{ secrets.NGROK_TOKEN }}" ]; then
-          nohup ngrok tcp 22 --log=stdout > ngrok.log 2>&1 &
-          echo "✅ ngrok started"
+          nohup ngrok tcp 22 > ngrok.log 2>&1 &
         fi
-        
-        # Start cloudflared (HTTP)
         nohup cloudflared tunnel --url ssh://localhost:22 > cloudflared.log 2>&1 &
-        echo "✅ cloudflared started"
-        
-        # Wait for tunnels to establish
         sleep 10
         
-    - name: 📡 Get tunnel URLs
+    - name: Get tunnel URLs
       run: |
-        # Get ngrok URL
         if [ -f ngrok.log ]; then
-          sleep 3
+          sleep 2
           NGROK_URL=$(curl -s http://localhost:4040/api/tunnels 2>/dev/null | jq -r '.tunnels[0].public_url // empty')
           if [ -n "$NGROK_URL" ]; then
-            NGROK_HOST=$(echo $NGROK_URL | sed 's/tcp:\/\///' | cut -d':' -f1)
-            NGROK_PORT=$(echo $NGROK_URL | cut -d':' -f3)
-            echo "NGROK_HOST=$NGROK_HOST" >> $GITHUB_ENV
-            echo "NGROK_PORT=$NGROK_PORT" >> $GITHUB_ENV
-            echo "✅ ngrok: $NGROK_HOST:$NGROK_PORT"
+            echo "NGROK_URL=$NGROK_URL" >> $GITHUB_ENV
           fi
         fi
         
-        # Get cloudflared URL
-        sleep 3
         CLOUDFLARE_URL=$(grep -o 'https://[a-z0-9.-]*\.trycloudflare\.com' cloudflared.log 2>/dev/null | head -1)
         if [ -n "$CLOUDFLARE_URL" ]; then
           echo "CLOUDFLARE_URL=$CLOUDFLARE_URL" >> $GITHUB_ENV
-          echo "✅ cloudflared: $CLOUDFLARE_URL"
         fi
         
-        # Get public IP
         PUBLIC_IP=$(curl -s ifconfig.me)
         echo "PUBLIC_IP=$PUBLIC_IP" >> $GITHUB_ENV
         
-    - name: 📝 Generate connection info
+    - name: Save connection info
       run: |
-        # Tạo file HTML đẹp
-        cat > connection-info.html << 'EOF'
-<!DOCTYPE html>
-<html lang="vi">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Ubuntu VPS Connection Info</title>
-    <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-        }
-        .card {
-            background: white;
-            border-radius: 20px;
-            padding: 30px;
-            margin-bottom: 20px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2);
-        }
-        .header {
-            text-align: center;
-            color: white;
-            margin-bottom: 30px;
-        }
-        .header h1 { font-size: 2.5rem; margin-bottom: 10px; }
-        .badge {
-            display: inline-block;
-            background: #10b981;
-            color: white;
-            padding: 5px 15px;
-            border-radius: 20px;
-            font-size: 14px;
-        }
-        .info-box {
-            background: #f8f9fa;
-            border-left: 4px solid #667eea;
-            padding: 15px;
-            margin: 15px 0;
-            border-radius: 10px;
-        }
-        .command {
-            background: #1e1e1e;
-            color: #d4d4d4;
-            padding: 15px;
-            border-radius: 10px;
-            font-family: 'Courier New', monospace;
-            overflow-x: auto;
-            margin: 10px 0;
-        }
-        .copy-btn {
-            background: #667eea;
-            color: white;
-            border: none;
-            padding: 8px 15px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 12px;
-            margin-top: 10px;
-        }
-        .copy-btn:hover { background: #5a67d8; }
-        h3 { color: #333; margin: 20px 0 10px 0; }
-        h3 i { margin-right: 10px; }
-        .status-online { color: #10b981; font-weight: bold; }
-        hr { margin: 20px 0; border: none; border-top: 2px solid #e5e7eb; }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🐧 Ubuntu VPS Ready!</h1>
-            <p>Your virtual server is running</p>
-            <span class="badge">🟢 ONLINE</span>
-        </div>
+        echo "========================================="
+        echo "UBUNTU VPS READY"
+        echo "========================================="
+        echo "Username: $USERNAME"
+        echo "Password: $PASSWORD"
+        echo "Public IP: $PUBLIC_IP"
+        echo ""
+        echo "ngrok: $NGROK_URL"
+        echo "Cloudflare: $CLOUDFLARE_URL"
+        echo "========================================="
         
-        <div class="card">
-            <h3>🔐 Login Credentials</h3>
-            <div class="info-box">
-                <p><strong>👤 Username:</strong> <code id="username">USERNAME_PLACEHOLDER</code></p>
-                <p><strong>🔑 Password:</strong> <code id="password">PASSWORD_PLACEHOLDER</code></p>
-                <p><strong>🌍 Public IP:</strong> <code id="public_ip">PUBLIC_IP_PLACEHOLDER</code></p>
-                <p><strong>⏱️ Expires in:</strong> DURATION_PLACEHOLDER hours</p>
-            </div>
-            
-            <h3>🚀 Connection Methods</h3>
-            
-            <div id="ngrok_section">
-                <h3>📡 Method 1: ngrok (TCP Tunnel)</h3>
-                <div class="info-box">
-                    <p><strong>Host:</strong> <code id="ngrok_host">NGROK_HOST_PLACEHOLDER</code></p>
-                    <p><strong>Port:</strong> <code id="ngrok_port">NGROK_PORT_PLACEHOLDER</code></p>
-                    <div class="command" id="ngrok_cmd">ssh USERNAME_PLACEHOLDER@NGROK_HOST_PLACEHOLDER -p NGROK_PORT_PLACEHOLDER</div>
-                    <button class="copy-btn" onclick="copyText('ngrok_cmd')">📋 Copy SSH Command</button>
-                </div>
-            </div>
-            
-            <div id="cloudflare_section">
-                <h3>☁️ Method 2: Cloudflare Tunnel (Web SSH)</h3>
-                <div class="info-box">
-                    <p><strong>Tunnel URL:</strong> <code id="cf_url">CLOUDFLARE_URL_PLACEHOLDER</code></p>
-                    <div class="command" id="cf_cmd">cloudflared access ssh --hostname CLOUDFLARE_URL_PLACEHOLDER</div>
-                    <button class="copy-btn" onclick="copyText('cf_cmd')">📋 Copy Command</button>
-                    <p style="margin-top: 10px; font-size: 14px;">
-                        💡 <strong>Or use browser:</strong> 
-                        <a href="CLOUDFLARE_URL_PLACEHOLDER" target="_blank" style="color: #667eea;">Open in Browser</a>
-                    </p>
-                </div>
-            </div>
-            
-            <hr>
-            
-            <h3>📝 Quick SSH Commands</h3>
-            <div class="command" id="ssh_manual">
-                # After connecting, you can run:
-                sudo apt update && sudo apt upgrade -y
-                sudo apt install nginx -y
-                python3 --version
-                free -h
-                df -h
-            </div>
-            
-            <hr>
-            
-            <h3>📊 System Info</h3>
-            <div class="info-box" id="system_info">
-                <p>Loading system info...</p>
-            </div>
-        </div>
-    </div>
-    
-    <script>
-        function copyText(elementId) {
-            const element = document.getElementById(elementId);
-            const text = element.innerText;
-            navigator.clipboard.writeText(text);
-            alert('✅ Copied to clipboard!');
-        }
+        echo "UBUNTU VPS CONNECTION INFO" > vps-info.txt
+        echo "=========================================" >> vps-info.txt
+        echo "Username: $USERNAME" >> vps-info.txt
+        echo "Password: $PASSWORD" >> vps-info.txt
+        echo "Public IP: $PUBLIC_IP" >> vps-info.txt
+        echo "" >> vps-info.txt
+        echo "--- ngrok (TCP) ---" >> vps-info.txt
+        echo "URL: $NGROK_URL" >> vps-info.txt
+        echo "SSH: ssh $USERNAME@$(echo $NGROK_URL | sed 's/tcp:\/\///' | cut -d':' -f1) -p $(echo $NGROK_URL | cut -d':' -f3)" >> vps-info.txt
+        echo "" >> vps-info.txt
+        echo "--- Cloudflare Tunnel ---" >> vps-info.txt
+        echo "URL: $CLOUDFLARE_URL" >> vps-info.txt
+        echo "Command: cloudflared access ssh --hostname $CLOUDFLARE_URL" >> vps-info.txt
+        echo "" >> vps-info.txt
+        echo "Created: $(date)" >> vps-info.txt
+        echo "Duration: ${{ github.event.inputs.duration }} hours" >> vps-info.txt
         
-        // Fill data from variables
-        document.getElementById('username').innerText = 'USERNAME_PLACEHOLDER';
-        document.getElementById('password').innerText = 'PASSWORD_PLACEHOLDER';
-        document.getElementById('public_ip').innerText = 'PUBLIC_IP_PLACEHOLDER';
-        
-        if (document.getElementById('ngrok_host') && 'NGROK_HOST_PLACEHOLDER' !== '') {
-            document.getElementById('ngrok_host').innerText = 'NGROK_HOST_PLACEHOLDER';
-            document.getElementById('ngrok_port').innerText = 'NGROK_PORT_PLACEHOLDER';
-            document.getElementById('ngrok_cmd').innerText = 'ssh USERNAME_PLACEHOLDER@NGROK_HOST_PLACEHOLDER -p NGROK_PORT_PLACEHOLDER';
-        } else {
-            document.getElementById('ngrok_section').style.display = 'none';
-        }
-        
-        if (document.getElementById('cf_url') && 'CLOUDFLARE_URL_PLACEHOLDER' !== '') {
-            document.getElementById('cf_url').innerText = 'CLOUDFLARE_URL_PLACEHOLDER';
-            document.getElementById('cf_cmd').innerHTML = document.getElementById('cf_cmd').innerHTML.replace('CLOUDFLARE_URL_PLACEHOLDER', 'CLOUDFLARE_URL_PLACEHOLDER');
-        } else {
-            document.getElementById('cloudflare_section').style.display = 'none';
-        }
-        
-        document.getElementById('ssh_manual').innerHTML = document.getElementById('ssh_manual').innerHTML;
-    </script>
-</body>
-</html>
-EOF
-
-        # Replace placeholders
-        sed -i "s/USERNAME_PLACEHOLDER/$USERNAME/g" connection-info.html
-        sed -i "s/PASSWORD_PLACEHOLDER/$PASSWORD/g" connection-info.html
-        sed -i "s/PUBLIC_IP_PLACEHOLDER/$PUBLIC_IP/g" connection-info.html
-        sed -i "s/DURATION_PLACEHOLDER/${{ github.event.inputs.duration }}/g" connection-info.html
-        sed -i "s|NGROK_HOST_PLACEHOLDER|${NGROK_HOST:-Not Available}|g" connection-info.html
-        sed -i "s/NGROK_PORT_PLACEHOLDER/${NGROK_PORT:-N/A}/g" connection-info.html
-        sed -i "s|CLOUDFLARE_URL_PLACEHOLDER|${CLOUDFLARE_URL:-Not Available}|g" connection-info.html
-        
-        # Create simple text info
-        cat > vps-info.txt << 'TXTEOF'
-╔══════════════════════════════════════════════════════════════╗
-║              🐧 UBUNTU VPS CONNECTION INFORMATION           ║
-╚══════════════════════════════════════════════════════════════╝
-
-📋 LOGIN CREDENTIALS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  Username: USERNAME_PLACEHOLDER
-  Password: PASSWORD_PLACEHOLDER
-  Public IP: PUBLIC_IP_PLACEHOLDER
-  Expires in: DURATION_PLACEHOLDER hours
-
-🚀 CONNECTION METHODS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-📡 METHOD 1: ngrok (TCP Tunnel)
-  Host: NGROK_HOST_PLACEHOLDER
-  Port: NGROK_PORT_PLACEHOLDER
-  Command: ssh USERNAME_PLACEHOLDER@NGROK_HOST_PLACEHOLDER -p NGROK_PORT_PLACEHOLDER
-
-☁️ METHOD 2: Cloudflare Tunnel (Web SSH)
-  URL: CLOUDFLARE_URL_PLACEHOLDER
-  Command: cloudflared access ssh --hostname CLOUDFLARE_URL_PLACEHOLDER
-  Browser: Open CLOUDFLARE_URL_PLACEHOLDER in your browser
-
-📝 QUICK COMMANDS (after SSH)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  sudo apt update && sudo apt upgrade -y
-  sudo apt install nginx python3 git -y
-  python3 --version
-  free -h
-  df -h
-  uptime
-
-💡 TIPS
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  • Download cloudflared: https://github.com/cloudflare/cloudflared
-  • Ngrok dashboard: http://localhost:4040
-  • Keep this file safe! Password is shown only once
-
-Created: $(date)
-TXTEOF
-
-        # Replace placeholders in text file
-        sed -i "s/USERNAME_PLACEHOLDER/$USERNAME/g" vps-info.txt
-        sed -i "s/PASSWORD_PLACEHOLDER/$PASSWORD/g" vps-info.txt
-        sed -i "s/PUBLIC_IP_PLACEHOLDER/$PUBLIC_IP/g" vps-info.txt
-        sed -i "s/DURATION_PLACEHOLDER/${{ github.event.inputs.duration }}/g" vps-info.txt
-        sed -i "s|NGROK_HOST_PLACEHOLDER|${NGROK_HOST:-Not Available}|g" vps-info.txt
-        sed -i "s/NGROK_PORT_PLACEHOLDER/${NGROK_PORT:-N/A}/g" vps-info.txt
-        sed -i "s|CLOUDFLARE_URL_PLACEHOLDER|${CLOUDFLARE_URL:-Not Available}|g" vps-info.txt
-        
-    - name: 📤 Upload connection info
+    - name: Upload info
       uses: actions/upload-artifact@v4
       with:
-        name: ubuntu-vps-info
-        path: |
-          vps-info.txt
-          connection-info.html
-          
-    - name: ⏰ Keep VPS alive
+        name: vps-info
+        path: vps-info.txt
+        
+    - name: Keep alive
       run: |
-        DURATION=${{ github.event.inputs.duration }}
-        SECONDS=$((DURATION * 3600))
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "🟢 VPS IS RUNNING - $DURATION hours remaining"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "📥 Download artifacts to get connection info"
-        echo "🛑 This job will automatically stop in $DURATION hours"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        HOURS=${{ github.event.inputs.duration }}
+        SECONDS=$((HOURS * 3600))
+        echo "VPS running for $HOURS hours"
         sleep $SECONDS
